@@ -292,15 +292,6 @@ input:focus,textarea:focus{
   opacity:.28;
   justify-self:center
 }
-.release-caption{
-  font-size:14px;
-  color:#49453f;
-  line-height:1.5;
-  margin-top:12px;
-  padding:12px;
-  background:#f5f4f0;
-  border-radius:5px
-}
 .summary{
   margin-top:34px
 }

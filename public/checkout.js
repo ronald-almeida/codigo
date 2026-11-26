@@ -152,7 +152,6 @@ async function init() {
   try {
     const config = await api('/api/config');
     document.querySelectorAll('[data-price]').forEach(element => { element.textContent = money(config.product.amount); });
-    document.querySelectorAll('[data-release]').forEach(element => { element.textContent = '24 horas'; });
     if (!config.available) {
       $('availability').textContent = 'O pagamento está temporariamente indisponível. Tente novamente mais tarde.';
       $('availability').hidden = false;

@@ -1,6 +1,6 @@
 # Checkout Pix — Black Vitalícia | Combo de Oratória
 
-Checkout responsivo inspirado na referência fornecida, com imagem original do produto, valor fixo de **R$ 247,00**, pagamento somente por Pix, sem CEP e sem cupom. Os botões de reembolso e WhatsApp ficam na página de obrigado. O prazo de acesso de **24 horas após a confirmação** aparece também antes do pagamento.
+Checkout responsivo inspirado na referência fornecida, com imagem original do produto, valor fixo de **R$ 247,00**, pagamento somente por Pix, sem CEP e sem cupom. Os botões de reembolso e WhatsApp e a informação sobre o prazo de acesso de **24 horas após a confirmação** ficam na página de obrigado. Conforme definido pelo responsável pelo produto, o prazo também será informado na copy enviada ao cliente antes da compra, sem repetir o aviso no checkout.
 
 ## Publicar na Vercel
 
