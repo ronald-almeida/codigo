@@ -89,7 +89,7 @@ export function createHandler({ env = process.env, fetcher = fetch } = {}) {
       const expected = error instanceof CheckoutError;
       if (!expected) console.error('checkout_unexpected_error', { name: error?.name });
       if (error.retryAfter) headers.set('Retry-After', String(error.retryAfter));
-      return respond({ error: expected ? error.message : 'Não foi possível concluir sua solicitação. Tente novamente.', retryAfter: error.retryAfter || 30, ...(session ? { order: publicOrder(session) } : {}) }, expected ? error.status : 500);
+      return respond({ error: expected ? error.message : 'Não foi possível concluir sua solicitação. Tente novamente.', ...(expected && error.code ? { code: error.code } : {}), retryAfter: error.retryAfter || 30, ...(session ? { order: publicOrder(session) } : {}) }, expected ? error.status : 500);
     }
   };
 }
