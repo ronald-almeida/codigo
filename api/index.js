@@ -1,4 +1,13 @@
-import { CheckoutError, PRODUCT, REFUND_URL, configuration, validateCustomer, readSession, cookieHeader, newOrder, publicOrder, checkoutOrder, issuePix, checkPix, nexum } from '../lib/checkout.js';
+import { CheckoutError, PRODUCT, REFUND_URL, configuration, validateCustomer, customerFingerprint, readSession, cookieHeader, newOrder, publicOrder, issuePix, checkPix, nexum } from '../lib/checkout.js';
+
+async function readInput(request) {
+  const text = await request.text();
+  if (text.length > 4096) throw new CheckoutError('Solicitação muito grande.', 413);
+  let input;
+  try { input = JSON.parse(text); } catch { throw new CheckoutError('Dados inválidos.'); }
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new CheckoutError('Dados inválidos.');
+  return input;
+}
 
 export function createHandler({ env = process.env, fetcher = fetch } = {}) {
   let healthCache;
@@ -14,11 +23,13 @@ export function createHandler({ env = process.env, fetcher = fetch } = {}) {
       const pathname = url.pathname.replace(/\/$/, '');
       const path = pathname === '/api' && url.searchParams.has('route') ? `/api/${url.searchParams.get('route')}` : pathname;
       if (path === '/api/config' && request.method === 'GET') {
+        // Rewrite legacy cookies to remove previously saved form values.
+        session = readSession(request, env);
         return respond({ product: PRODUCT, available: configuration(env).ready, releaseHours: 24 });
       }
       if (path === '/api/order' && request.method === 'GET') {
         session = readSession(request, env);
-        return respond(session ? checkoutOrder(session) : { hasOrder: false });
+        return respond(session ? publicOrder(session) : { hasOrder: false });
       }
       if (!configuration(env).ready) throw new CheckoutError('O pagamento está temporariamente indisponível. Tente novamente mais tarde.', 503);
       if (path === '/api/health' && request.method === 'GET') {
@@ -39,23 +50,13 @@ export function createHandler({ env = process.env, fetcher = fetch } = {}) {
       }
       session = readSession(request, env);
       if (path === '/api/order' && request.method === 'POST') {
-        const text = await request.text();
-        if (text.length > 4096) throw new CheckoutError('Solicitação muito grande.', 413);
-        let input;
-        try { input = JSON.parse(text); } catch { throw new CheckoutError('Dados inválidos.'); }
-        if (!input || typeof input !== 'object' || Array.isArray(input)) throw new CheckoutError('Dados inválidos.');
-        if (session) {
-          // Phone is not part of Nexum's idempotent request body. Older sessions
-          // did not save it, so allow it to be completed without changing a charge.
-          const phone = String(input.phone ?? '').replace(/\D/g, '');
-          if (session.customer && /^[1-9]{2}\d{8,9}$/.test(phone)) {
-            session.buyer = { ...checkoutOrder(session).buyer, phone };
-          }
-          return respond(checkoutOrder(session));
-        }
-        session = newOrder(validateCustomer(input));
-        session.buyer = { name: String(input.name).trim(), email: session.customer.generatedEmail, document: session.customer.generatedDocument, phone: String(input.phone).replace(/\D/g, '') };
-        return respond(checkoutOrder(session), 201);
+        const input = await readInput(request);
+        const customer = validateCustomer(input);
+        // Only a retry explicitly tied to the current page may reuse its order.
+        // Opening/reloading the checkout starts a new form with no old values.
+        if (session && session.id === input.orderId && session.status === 'PENDING' && session.customerHash === customerFingerprint(customer, env)) return respond(publicOrder(session));
+        session = newOrder(customer, Date.now(), env);
+        return respond(publicOrder(session), 201);
       }
       if (!session) throw new CheckoutError('Sua sessão não foi encontrada. Volte ao checkout para continuar.', 401);
       if (path === '/api/pix' && request.method === 'POST') {
@@ -64,7 +65,8 @@ export function createHandler({ env = process.env, fetcher = fetch } = {}) {
         if (session.txId && session.status !== 'PAID') await checkPix(session, env, fetcher);
         if (session.status === 'PAID') return respond(publicOrder(session));
         if (['FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED'].includes(session.status)) return respond(publicOrder(session));
-        try { return respond(await issuePix(session, env, fetcher)); }
+        const customer = validateCustomer(await readInput(request));
+        try { return respond(await issuePix(session, env, fetcher, customer)); }
         catch (error) {
           if (error.creationRejected && !session.txId) {
             // No charge was created. Discard this failed attempt so the next

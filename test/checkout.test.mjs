@@ -19,11 +19,13 @@ test('CPF check digits, name normalization and email confirmation', () => {
 });
 
 test('encrypted session hides payer data, rejects tampering, expiry and another key', () => {
-  const order = newOrder(validateCustomer(customer));
+  const order = newOrder(validateCustomer(customer), Date.now(), env);
   const token = seal(order, env);
   assert.equal(token.includes('test@example.com'), false);
   assert.equal(unseal(token, env).id, order.id);
-  assert.equal(unseal('x' + token.slice(1), env), null);
+  const tampered = Buffer.from(token, 'base64url');
+  tampered[0] ^= 1;
+  assert.equal(unseal(tampered.toString('base64url'), env), null);
   assert.equal(unseal(token, env, order.expires + 1), null);
   assert.equal(unseal(token, { ...env, CHECKOUT_SESSION_SECRET: 'another-test-secret-with-more-than-32-characters' }), null);
 });
@@ -36,12 +38,12 @@ test('only server price is used, credentials stay server-side and retries reuse 
   const cookie = getCookie(prepared);
   assert.match(prepared.headers.get('set-cookie'), /HttpOnly; SameSite=Strict/);
   assert.match(prepared.headers.get('set-cookie'), /Secure/);
-  const first = await handle(request('/api/pix', { method: 'POST', cookie, body: {} }));
+  const first = await handle(request('/api/pix', { method: 'POST', cookie, body: customer }));
   const result = await first.json();
   assert.equal(result.amount, PRODUCT.amount);
   assert.equal(result.status, 'PENDING');
   assert.equal(JSON.stringify(result).includes(env.NEXUM_API_CREDENTIAL), false);
-  await handle(request('/api/pix', { method: 'POST', cookie: getCookie(first), body: {} }));
+  await handle(request('/api/pix', { method: 'POST', cookie: getCookie(first), body: customer }));
   assert.equal(calls[0].body, calls[1].body);
   assert.equal(calls[0].headers['Idempotency-Key'], calls[1].headers['Idempotency-Key']);
   assert.equal(JSON.parse(calls[0].body).amount, 247);
@@ -50,8 +52,8 @@ test('only server price is used, credentials stay server-side and retries reuse 
 });
 
 test('PROCESSING/202 preserves tx_id and returns no fake confirmation', async () => {
-  const order = newOrder(validateCustomer(customer));
-  const result = await issuePix(order, env, async () => response({ ok: true, tx_id: 'processing_tx', status: 'PROCESSING', reconciliation_required: true }, 202));
+  const order = newOrder(validateCustomer(customer), Date.now(), env);
+  const result = await issuePix(order, env, async () => response({ ok: true, tx_id: 'processing_tx', status: 'PROCESSING', reconciliation_required: true }, 202), validateCustomer(customer));
   assert.equal(result.processing, true);
   assert.equal(result.txId, 'processing_tx');
   assert.equal(result.status, 'PENDING');
@@ -62,9 +64,9 @@ test('timeout can retry the original prepared order and never changes idempotenc
   const keys = [];
   const handle = createHandler({ env, fetcher: async (url, options) => { keys.push(options.headers['Idempotency-Key']); throw new Error('timeout'); } });
   const prepared = await handle(request('/api/order', { method: 'POST', body: customer }));
-  const first = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: {} }));
+  const first = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: customer }));
   assert.equal(first.status, 502);
-  await handle(request('/api/pix', { method: 'POST', cookie: getCookie(first), body: {} }));
+  await handle(request('/api/pix', { method: 'POST', cookie: getCookie(first), body: customer }));
   assert.equal(keys[0], keys[1]);
 });
 
@@ -77,12 +79,12 @@ test('non-JSON provider errors log only protocol metadata and preserve the order
     return response({ ok: true, tx_id: 'recovered_tx', amount: 247, qr_code_text: 'TEST-NOT-A-PAYABLE-PIX' });
   } });
   const prepared = await handle(request('/api/order', { method: 'POST', body: customer }));
-  const failure = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: {} }));
+  const failure = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: customer }));
   assert.equal(failure.status, 502);
   assert.equal(failure.headers.get('retry-after'), '30');
   assert.deepEqual(log.mock.calls[0].arguments, ['nexum_invalid_response', { operation: 'create_pix', status: 502, contentType: 'text/html' }]);
   assert.equal(JSON.stringify(await failure.json()).includes('private upstream'), false);
-  const recovered = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(failure), body: {} }));
+  const recovered = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(failure), body: customer }));
   assert.equal(recovered.status, 200);
   assert.equal((await recovered.json()).txId, 'recovered_tx');
   assert.equal(keys[0], keys[1]);
@@ -90,7 +92,7 @@ test('non-JSON provider errors log only protocol metadata and preserve the order
 
 test('status polling enforces cooldown, confirms expected amount and deduplicates concurrent reads', async () => {
   let calls = 0;
-  const order = { ...newOrder(validateCustomer(customer)), txId: randomUUID() };
+  const order = { ...newOrder(validateCustomer(customer), Date.now(), env), txId: randomUUID() };
   const fetcher = async () => { calls++; return response({ ok: true, tx_id: order.txId, status: 'PAID', amount: 247 }); };
   const copies = [structuredClone(order), structuredClone(order)];
   await Promise.all(copies.map(copy => checkPix(copy, env, fetcher)));
@@ -103,7 +105,7 @@ test('status polling enforces cooldown, confirms expected amount and deduplicate
 
 test('confirmation rejects wrong transaction, underpayment, missing amount and unknown statuses', async () => {
   for (const data of [{ status: 'PAID', amount: 1 }, { status: 'PAID' }, { status: 'PAID', amount: 247, tx_id: 'unrelated' }]) {
-    const order = { ...newOrder(validateCustomer(customer)), txId: randomUUID() };
+    const order = { ...newOrder(validateCustomer(customer), Date.now(), env), txId: randomUUID() };
     await assert.rejects(checkPix(order, env, async () => response({ ok: true, tx_id: order.txId, ...data })));
     assert.equal(order.status, 'PENDING');
   }
@@ -113,7 +115,7 @@ test('confirmation rejects wrong transaction, underpayment, missing amount and u
 });
 
 test('Retry-After is respected, including HTTP date format', async () => {
-  const order = { ...newOrder(validateCustomer(customer)), txId: randomUUID() };
+  const order = { ...newOrder(validateCustomer(customer), Date.now(), env), txId: randomUUID() };
   const now = Date.now();
   await assert.rejects(checkPix(order, env, async () => response({}, 429, { 'Retry-After': '120' }), now), error => error.status === 429 && error.retryAfter === 120);
   assert.equal(order.nextCheckAt, now + 120000);
@@ -126,7 +128,7 @@ test('receipt needs a verified payment and no query param or forged cookie bypas
   assert.equal((await handle(request('/api/receipt', { cookie: 'codigo_checkout=forged' }))).status, 401);
   const prepared = await handle(request('/api/order', { method: 'POST', body: customer }));
   assert.equal((await handle(request('/api/receipt', { cookie: getCookie(prepared) }))).status, 409);
-  const order = { ...newOrder(validateCustomer(customer)), txId: 'paid', status: 'PAID', nextCheckAt: Date.now() + 30000 };
+  const order = { ...newOrder(validateCustomer(customer), Date.now(), env), txId: 'paid', status: 'PAID', nextCheckAt: Date.now() + 30000 };
   const receipt = await handle(request('/api/receipt', { cookie: `codigo_checkout=${seal(order, env)}` }));
   const data = await receipt.json();
   assert.equal(data.releaseHours, 24);
@@ -143,13 +145,13 @@ test('cross-origin posts, malformed payload and unknown secret fail closed', asy
   assert.equal((await unavailable(request('/api/order', { method: 'POST', body: customer }))).status, 503);
 });
 
-test('an active charge cannot be replaced or reset; expired charge permits a new order', async () => {
+test('an explicit retry reuses its active order; reset requires a terminal payment', async () => {
   const handle = createHandler({ env });
-  const unconfirmed = newOrder(validateCustomer(customer));
+  const unconfirmed = newOrder(validateCustomer(customer), Date.now(), env);
   assert.equal((await handle(request('/api/reset', { method: 'POST', cookie: `codigo_checkout=${seal(unconfirmed, env)}`, body: {} }))).status, 409);
-  const order = { ...newOrder(validateCustomer(customer)), txId: 'active', nextCheckAt: Date.now() + 30000 };
+  const order = { ...newOrder(validateCustomer(customer), Date.now(), env), txId: 'active', nextCheckAt: Date.now() + 30000 };
   const cookie = `codigo_checkout=${seal(order, env)}`;
-  const prepared = await handle(request('/api/order', { method: 'POST', cookie, body: { ...customer, email: 'changed@example.com' } }));
+  const prepared = await handle(request('/api/order', { method: 'POST', cookie, body: { ...customer, orderId: order.id } }));
   assert.equal((await prepared.json()).id, order.id);
   assert.equal((await handle(request('/api/reset', { method: 'POST', cookie, body: {} }))).status, 409);
   order.status = 'EXPIRED';
@@ -170,7 +172,7 @@ test('release deadline stays consistent in checkout config and paid receipt', as
     const handle = createHandler({ env: settings });
     const expected = 24;
     assert.equal((await (await handle(request('/api/config'))).json()).releaseHours, expected);
-    const order = { ...newOrder(validateCustomer(customer)), txId: randomUUID(), status: 'PAID', nextCheckAt: Date.now() + 30000 };
+    const order = { ...newOrder(validateCustomer(customer), Date.now(), env), txId: randomUUID(), status: 'PAID', nextCheckAt: Date.now() + 30000 };
     const receipt = await handle(request('/api/receipt', { cookie: `codigo_checkout=${seal(order, settings)}` }));
     assert.equal((await receipt.json()).releaseHours, expected);
   }
@@ -192,48 +194,72 @@ test('phone with DDD is required and invalid submissions never reach the payment
 test('cancelled, failed, expired and refunded payments never produce a receipt', async () => {
   const handle = createHandler({ env });
   for (const status of ['PENDING', 'FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED']) {
-    const order = { ...newOrder(validateCustomer(customer)), txId: randomUUID(), status, nextCheckAt: Date.now() + 30000 };
+    const order = { ...newOrder(validateCustomer(customer), Date.now(), env), txId: randomUUID(), status, nextCheckAt: Date.now() + 30000 };
     const receipt = await handle(request('/api/receipt', { cookie: `codigo_checkout=${seal(order, env)}` }));
     assert.equal(receipt.status, 409);
   }
 });
 
-test('failed generation and reload restore all buyer fields only through the session order endpoint', async t => {
+test('cookies and order responses contain no buyer form values, including migrated legacy sessions', async t => {
   t.mock.method(console, 'error', () => {});
   const handle = createHandler({ env, fetcher: async () => response({ ok: false }, 502) });
   const prepared = await handle(request('/api/order', { method: 'POST', body: customer }));
-  const failure = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: {} }));
+  const firstOrder = await prepared.json();
+  const failure = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: customer }));
   const reloaded = await handle(request('/api/order', { cookie: getCookie(failure) }));
-  assert.deepEqual((await reloaded.json()).buyer, { name: customer.name, email: customer.email, document: '09115751031', phone: '75999999999' });
-  assert.match(reloaded.headers.get('cache-control'), /no-store/);
-  const status = await handle(request('/api/status', { cookie: getCookie(failure) }));
-  assert.equal((await status.json()).buyer, undefined);
-  assert.equal((await failure.json()).buyer, undefined);
-  const legacy = newOrder(validateCustomer(customer));
-  const legacyResponse = await handle(request('/api/order', { cookie: `codigo_checkout=${seal(legacy, env)}` }));
-  assert.equal((await legacyResponse.json()).buyer.document, '09115751031');
+  const token = getCookie(reloaded).split('=')[1];
+  const decoded = unseal(token, env);
+  assert.equal(decoded.customer, undefined);
+  assert.equal(decoded.buyer, undefined);
+  assert.equal(JSON.stringify(decoded).includes(customer.email), false);
+  assert.equal(JSON.stringify(decoded).includes('09115751031'), false);
+  assert.equal((await reloaded.json()).buyer, undefined);
+  const legacy = { ...newOrder(validateCustomer(customer), Date.now(), env), customer: validateCustomer(customer), buyer: customer };
+  const migrated = await handle(request('/api/config', { cookie: `codigo_checkout=${seal(legacy, env)}` }));
+  const migratedSession = unseal(getCookie(migrated).split('=')[1], env);
+  assert.equal(migratedSession.customer, undefined);
+  assert.equal(migratedSession.buyer, undefined);
+  const fresh = await handle(request('/api/order', { method: 'POST', cookie: getCookie(prepared), body: { ...customer, name: 'Joana Teste' } }));
+  assert.notEqual((await fresh.json()).id, firstOrder.id);
+});
+
+test('edited form values create a new order and are actually sent to the payment provider', async () => {
+  const calls = [];
+  const handle = createHandler({ env, fetcher: async (url, options) => { calls.push(JSON.parse(options.body)); return response({ ok: true, tx_id: 'edited_tx', amount: 247, qr_code_text: 'TEST-NOT-A-PAYABLE-PIX' }); } });
+  const first = await handle(request('/api/order', { method: 'POST', body: customer }));
+  const order = await first.json();
+  const edited = { ...customer, name: 'Joana Teste', email: 'joana@example.com', emailConfirmation: 'joana@example.com' };
+  const changed = await handle(request('/api/order', { method: 'POST', cookie: getCookie(first), body: { ...edited, orderId: order.id } }));
+  assert.notEqual((await changed.json()).id, order.id);
+  const invalid = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(changed), body: customer }));
+  assert.equal(invalid.status, 400);
+  assert.equal(calls.length, 0);
+  const generated = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(changed), body: edited }));
+  assert.equal(generated.status, 200);
+  assert.equal(calls[0].generatedName, 'Joana Teste');
+  assert.equal(calls[0].generatedEmail, 'joana@example.com');
 });
 
 test('a definitive provider rejection permits corrected data, while uncertain errors preserve the key', async t => {
   t.mock.method(console, 'error', () => {});
   const handle = createHandler({ env, fetcher: async () => response({ ok: false }, 422) });
   const prepared = await handle(request('/api/order', { method: 'POST', body: customer }));
-  const failure = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: {} }));
+  const failure = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: customer }));
   assert.equal((await failure.json()).retryFresh, true);
   assert.match(failure.headers.get('set-cookie'), /Max-Age=0/);
   const retry = await handle(request('/api/order', { method: 'POST', cookie: getCookie(failure), body: { ...customer, name: 'Joana Teste' } }));
   assert.equal(retry.status, 201);
-  assert.equal((await retry.json()).buyer.name, 'Joana Teste');
+  assert.equal((await retry.json()).buyer, undefined);
   const unknown = createHandler({ env, fetcher: async () => response({ ok: false }, 502) });
-  const uncertain = await unknown(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: {} }));
+  const uncertain = await unknown(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: customer }));
   assert.equal((await unknown(request('/api/reset', { method: 'POST', cookie: getCookie(uncertain), body: {} }))).status, 409);
 });
 
 test('a processing transaction that later fails is reconciled instead of replayed forever', async () => {
-  const order = { ...newOrder(validateCustomer(customer)), txId: randomUUID(), nextCheckAt: 0 };
+  const order = { ...newOrder(validateCustomer(customer), Date.now(), env), txId: randomUUID(), nextCheckAt: 0 };
   const calls = [];
   const handle = createHandler({ env, fetcher: async url => { calls.push(url); return response({ ok: true, tx_id: order.txId, status: 'FAILED', amount: 247 }); } });
-  const result = await handle(request('/api/pix', { method: 'POST', cookie: `codigo_checkout=${seal(order, env)}`, body: {} }));
+  const result = await handle(request('/api/pix', { method: 'POST', cookie: `codigo_checkout=${seal(order, env)}`, body: customer }));
   assert.equal((await result.json()).status, 'FAILED');
   assert.equal(calls.length, 1);
   assert.match(calls[0], /\/pix\/status\//);
@@ -260,7 +286,7 @@ test('a DNS failure discards the attempt and the next submit creates a fresh Pix
     return response({ ok: true, tx_id: 'new_attempt', amount: 247, qr_code_text: 'TEST-NOT-A-PAYABLE-PIX' });
   } });
   const prepared = await handle(request('/api/order', { method: 'POST', body: customer }));
-  const failure = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: {} }));
+  const failure = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: customer }));
   const data = await failure.json();
   assert.equal(data.code, 'ENOTFOUND');
   assert.equal(data.error, 'Não foi possível gerar o Pix. Tente novamente.');
@@ -271,7 +297,7 @@ test('a DNS failure discards the attempt and the next submit creates a fresh Pix
   const restored = await handle(request('/api/order', { cookie: getCookie(failure) }));
   assert.deepEqual(await restored.json(), { hasOrder: false });
   const retried = await handle(request('/api/order', { method: 'POST', cookie: getCookie(failure), body: { ...customer, name: 'Joana Teste' } }));
-  const pix = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(retried), body: {} }));
+  const pix = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(retried), body: { ...customer, name: 'Joana Teste' } }));
   assert.equal((await pix.json()).txId, 'new_attempt');
   assert.notEqual(calls[0].headers['Idempotency-Key'], calls[1].headers['Idempotency-Key']);
   assert.equal(JSON.parse(calls[1].body).generatedName, 'Joana Teste');

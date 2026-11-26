@@ -30,16 +30,16 @@ function stopPolling() {
   clearInterval(countdown);
   countdown = null;
 }
-function rememberOrder(order, { restore = false } = {}) {
-  currentOrder = order;
+function clearForm() {
+  stopPolling();
+  currentOrder = null;
+  form.reset();
+  form.hidden = false;
   personal.hidden = false;
-  if (restore && order.buyer) {
-    for (const key of ['name', 'email', 'document', 'phone']) $(key).value = order.buyer[key] || '';
-    $('emailConfirmation').value = order.buyer.email || '';
-  }
-  // Keep the saved payer visible while a retry reconciles the same charge.
-  form.noValidate = true;
-  personal.querySelectorAll('input').forEach(input => { input.readOnly = input.id !== 'phone'; });
+  form.noValidate = false;
+  personal.querySelectorAll('input').forEach(input => { input.readOnly = false; });
+  $('pix-panel').hidden = true;
+  clearError('form-error');
 }
 function consumeStatus(data) {
   currentOrder = data;
@@ -91,12 +91,10 @@ async function generatePix({ values, focus = false, copy = false } = {}) {
       await api('/api/reset', {});
       currentOrder = null;
     }
-    // Save the encrypted session BEFORE creating a charge. Retrying a failed
-    // request keeps the original order even when the provider response is lost.
-    rememberOrder(await api('/api/order', values));
+    currentOrder = await api('/api/order', { ...values, orderId: currentOrder?.id });
     if (consumeStatus(currentOrder)) return;
     creating = true;
-    const data = await api('/api/pix', {});
+    const data = await api('/api/pix', values);
     if (consumeStatus(data)) return;
     if (data.processing || !data.txId || typeof data.qrCode !== 'string' || !data.qrCode.trim()) {
       throw new Error(generationError);
@@ -112,6 +110,7 @@ async function generatePix({ values, focus = false, copy = false } = {}) {
     $('payment-status').textContent = 'Aguardando pagamento. A confirmação é automática.';
     form.hidden = true;
     $('pix-panel').hidden = false;
+    form.reset();
     updateCountdown();
     schedule(data.retryAfter || 30);
     countdown ??= setInterval(updateCountdown, 1000);
@@ -155,7 +154,7 @@ form.addEventListener('submit', async event => {
   event.preventDefault();
   if (busy || !available) return;
   const values = Object.fromEntries(new FormData(form));
-  if ((!currentOrder || terminal.has(currentOrder.status)) && values.email.trim().toLowerCase() !== values.emailConfirmation.trim().toLowerCase()) {
+  if (values.email.trim().toLowerCase() !== values.emailConfirmation.trim().toLowerCase()) {
     showError('form-error', 'Os e-mails precisam ser iguais.');
     $('emailConfirmation').focus(); return;
   }
@@ -186,12 +185,6 @@ async function init() {
       $('availability').hidden = false;
       return;
     }
-    const order = await api('/api/order');
-    if (order.hasOrder) {
-      rememberOrder(order, { restore: true });
-      // Reload restores the form; it must not silently trigger another create request.
-      consumeStatus(order);
-    }
     setGenerating(false);
   } catch {
     available = false;
@@ -200,4 +193,9 @@ async function init() {
     $('availability').hidden = false;
   }
 }
+clearForm();
+window.addEventListener('pageshow', event => {
+  if (event.persisted) { clearForm(); setGenerating(false); }
+  else form.reset();
+});
 init();

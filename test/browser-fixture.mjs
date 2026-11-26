@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname, sep } from 'node:path';
 import { createHandler } from '../api/index.js';
+import { newOrder, validateCustomer, seal } from '../lib/checkout.js';
 const env = { NEXUM_CHAT_ID: 'local-test', NEXUM_API_CREDENTIAL: 'local-test', CHECKOUT_SESSION_SECRET: 'local-browser-test-secret-never-use-in-production', WHATSAPP_URL: 'https://wa.me/5575988393742' };
 let status = 'PENDING';
 let mode = 'success';
@@ -28,6 +29,13 @@ createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (url.pathname === '/fixture/reset') { status = 'PENDING'; mode = 'success'; attempts = []; statusChecks = 0; res.writeHead(302, { 'Set-Cookie': 'codigo_checkout=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0', Location: '/' }); res.end(); return; }
+    if (url.pathname === '/fixture/legacy') {
+      const buyer = { name: 'Cliente Antigo', email: 'antigo@example.com', emailConfirmation: 'antigo@example.com', document: '09115751031', phone: '75999999999' };
+      const customer = validateCustomer(buyer);
+      const order = { ...newOrder(customer, Date.now(), env), customer, buyer };
+      delete order.customerHash;
+      res.writeHead(302, { 'Set-Cookie': `codigo_checkout=${seal(order, env)}; Path=/; HttpOnly; SameSite=Strict`, Location: '/' }); res.end(); return;
+    }
     if (url.pathname === '/fixture/mode') {
       const requested = url.searchParams.get('value');
       if (!['success', 'failure', 'dns-failure', 'processing', 'missing-code', 'status-failure'].includes(requested)) { res.writeHead(400).end(); return; }
