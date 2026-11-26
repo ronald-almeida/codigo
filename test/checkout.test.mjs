@@ -248,3 +248,16 @@ test('read-only health check validates gateway access without exposing account d
   await handle(request('/api/health'));
   assert.equal(calls, 1);
 });
+
+test('a DNS outage keeps buyer details and reports unavailability without leaking provider details', async t => {
+  t.mock.method(console, 'error', () => {});
+  const handle = createHandler({ env, fetcher: async () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('private upstream details'), { code: 'ENOTFOUND' }) }); } });
+  const prepared = await handle(request('/api/order', { method: 'POST', body: customer }));
+  const failure = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: {} }));
+  const data = await failure.json();
+  assert.equal(data.code, 'ENOTFOUND');
+  assert.match(data.error, /temporariamente indisponível/);
+  assert.equal(JSON.stringify(data).includes('private upstream'), false);
+  const restored = await handle(request('/api/order', { cookie: getCookie(failure) }));
+  assert.equal((await restored.json()).buyer.name, customer.name);
+});
