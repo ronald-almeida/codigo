@@ -41,11 +41,14 @@ node test/browser-fixture.mjs
 
 Acesse `http://127.0.0.1:4186`. Use apenas dados fictícios: nome `João Teste`, email `teste@example.com`, CPF de exemplo da documentação Nexum `09115751031` e telefone `(75) 99999-9999`. A prévia sinaliza que é um teste; seu QR não pode ser pago. A rota local `/fixture/paid` simula confirmação; `/fixture/reset` reinicia a prévia. Essas rotas não existem no backend publicado.
 
+Para verificar falhas de geração, altere o simulador pela rota local `/fixture/mode?value=failure`, `processing` ou `missing-code` e clique em gerar: o formulário deve continuar aberto com erro vermelho. Volte para `value=success` e tente novamente: só então a tela do Pix deve aparecer. `/fixture/stats` informa se as tentativas mantiveram o mesmo pedido e corpo, sem exibir os dados do comprador.
+
 ## Fluxo de pagamento
 
 - O navegador envia os dados a `/api/order`, que valida nome, email, confirmação de email, CPF e telefone, fixa o preço no servidor e cria uma sessão criptografada HttpOnly.
 - `/api/pix` chama `https://api.nexumpaybot.com/api/public/pix/create` com a mesma `Idempotency-Key`, corpo e referência em todas as tentativas do pedido. Recarregar a página recupera a cobrança existente.
 - O QR e o código Copia e Cola vêm da Nexum; nenhum QR de pagamento da referência é reutilizado.
+- A tela de pagamento só aparece quando a API devolve um código Pix disponível. Se a geração falhar ou ainda estiver em processamento, o formulário continua aberto e exibe um erro vermelho abaixo dos botões. Uma nova tentativa usa a mesma cobrança, sem botões separados de recuperação ou consulta manual.
 - `/api/status` consulta o provedor a cada 30 segundos e respeita `Retry-After`. Confere identificador e valor antes de aceitar o pagamento.
 - Após confirmação, o navegador abre `/obrigado`. `/api/receipt` valida a sessão e o pagamento; parâmetros como `?paid=true` não liberam o recibo.
 - A página de obrigado informa as 24 horas, abre o WhatsApp e direciona o pedido de reembolso para `https://reembolso-de-alunos.vercel.app/` sem anexar dados pessoais à URL.

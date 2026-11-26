@@ -18,6 +18,6 @@ export async function api(path, body) {
 }
 export function friendlyError(error) {
   return ['TimeoutError', 'AbortError', 'TypeError'].includes(error.name)
-    ? 'Não foi possível conectar ao pagamento. Verifique sua internet e tente novamente. Sua cobrança será recuperada com segurança.'
+    ? 'Não foi possível conectar ao pagamento. Verifique sua internet e tente novamente.'
     : error.message;
 }

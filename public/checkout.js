@@ -2,101 +2,144 @@ import { api, money, friendlyError } from './shared.js';
 
 const $ = id => document.getElementById(id);
 const form = $('buyer-form');
+const personal = form.querySelector('.personal');
+const terminal = new Set(['FAILED', 'CANCELLED', 'EXPIRED', 'REFUNDED']);
+const generationError = 'Não foi possível gerar o Pix. Tente novamente.';
 let currentOrder = null;
 let busy = false;
+let available = false;
 let timer;
 let countdown;
 let nextCheckAt = 0;
-let pollDelay = 30000;
 let expiresAt = null;
-let copyOnCreate = false;
 
-function showError(id, error) { $(id).textContent = friendlyError(error); $(id).hidden = false; }
+function showError(id, message) {
+  $(id).textContent = typeof message === 'string' ? message : friendlyError(message);
+  $(id).hidden = false;
+}
 function clearError(id) { $(id).hidden = true; $(id).textContent = ''; }
-function showPanel() {
-  form.hidden = true;
-  $('pix-panel').hidden = false;
+function setGenerating(value) {
+  busy = value;
+  form.setAttribute('aria-busy', String(value));
+  $('pay-button').disabled = value || !available;
+  $('initial-copy-button').disabled = value || !available;
+  $('pay-button').querySelector('span').textContent = value ? 'Gerando Pix…' : 'Gerar código QR';
 }
-function schedule(seconds = 30) {
+function stopPolling() {
   clearTimeout(timer);
-  pollDelay = Math.max(30, Number(seconds) || 30) * 1000;
-  nextCheckAt = Date.now() + pollDelay;
-  timer = setTimeout(checkPayment, pollDelay);
-  updateCountdown();
+  clearInterval(countdown);
+  countdown = null;
 }
-function updateCountdown() {
-  const remaining = Math.ceil((nextCheckAt - Date.now()) / 1000);
-  $('check-button').disabled = busy || remaining > 0;
-  $('check-button').textContent = remaining > 0 ? `Consultar pagamento em ${remaining}s` : 'Consultar pagamento';
-  if (expiresAt) {
-    const left = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
-    const hours = Math.floor(left / 3600), minutes = Math.floor(left % 3600 / 60), seconds = left % 60;
-    $('expiry').textContent = left > 0 ? `Validade do Pix: ${hours > 0 ? `${hours}h ` : ''}${String(minutes).padStart(2, '0')}min ${String(seconds).padStart(2, '0')}s`
-      : 'O prazo deste código terminou. Estamos conferindo o status antes de permitir outra cobrança.';
-    if (left === 0) { $('code-area').hidden = true; $('qr-area').hidden = true; }
-  }
+function rememberOrder(order, { restored = false } = {}) {
+  currentOrder = order;
+  // A retry must use the same payer and idempotency key. Do not ask for data again
+  // when the encrypted session has already saved this order after a page reload.
+  form.noValidate = true;
+  personal.querySelectorAll('input').forEach(input => { input.readOnly = true; });
+  if (restored) personal.hidden = true;
 }
 function consumeStatus(data) {
   currentOrder = data;
   if (data.status === 'PAID') {
-    clearTimeout(timer); clearInterval(countdown);
-    $('payment-status').textContent = 'Pagamento confirmado! Abrindo sua página de obrigado…';
+    stopPolling();
     location.replace('/obrigado');
     return true;
   }
-  if (['FAILED', 'CANCELLED', 'EXPIRED', 'REFUNDED'].includes(data.status)) {
-    clearTimeout(timer); clearInterval(countdown);
-    const messages = { FAILED: 'Não foi possível concluir esse pagamento.', CANCELLED: 'Esta cobrança foi cancelada.', EXPIRED: 'Este Pix expirou.', REFUNDED: 'O pagamento desta cobrança foi reembolsado.' };
-    $('payment-status').textContent = messages[data.status];
-    $('code-area').hidden = true; $('qr-area').hidden = true; $('check-button').hidden = true; $('retry-button').hidden = true; $('reset-button').hidden = false;
+  if (terminal.has(data.status)) {
+    stopPolling();
+    form.hidden = false;
+    personal.hidden = false;
+    personal.querySelectorAll('input').forEach(input => { input.readOnly = false; });
+    form.noValidate = false;
+    $('pix-panel').hidden = true;
+    const messages = {
+      FAILED: 'Não foi possível gerar o Pix. Tente novamente.',
+      CANCELLED: 'Este Pix foi cancelado. Você pode gerar um novo código.',
+      EXPIRED: 'Este Pix expirou. Você pode gerar um novo código.',
+      REFUNDED: 'Este pagamento foi reembolsado. Você pode iniciar uma nova compra.',
+    };
+    showError('form-error', messages[data.status]);
     return true;
   }
   return false;
 }
-async function recoverPix({ focus = false } = {}) {
+function schedule(seconds = 30) {
+  clearTimeout(timer);
+  const delay = Math.max(30, Number(seconds) || 30) * 1000;
+  nextCheckAt = Date.now() + delay;
+  timer = setTimeout(checkPayment, delay);
+}
+function updateCountdown() {
+  if (!expiresAt) return;
+  const left = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
+  const hours = Math.floor(left / 3600), minutes = Math.floor(left % 3600 / 60), seconds = left % 60;
+  $('expiry').textContent = left > 0
+    ? 'Validade do Pix: ' + (hours > 0 ? hours + 'h ' : '') + String(minutes).padStart(2, '0') + 'min ' + String(seconds).padStart(2, '0') + 's'
+    : 'O prazo deste código terminou. Aguarde a confirmação automática.';
+  if (left === 0) { $('code-area').hidden = true; $('qr-area').hidden = true; }
+}
+async function generatePix({ values, focus = false, copy = false } = {}) {
   if (busy) return;
-  busy = true;
-  showPanel();
-  clearError('pix-error');
-  $('retry-button').hidden = true;
-  $('payment-status').textContent = 'Preparando sua cobrança Pix…';
+  setGenerating(true);
+  clearError('form-error');
+  let preparingOrder = false;
   try {
+    if (currentOrder && terminal.has(currentOrder.status)) {
+      await api('/api/reset', {});
+      currentOrder = null;
+    }
+    if (!currentOrder) {
+      preparingOrder = true;
+      // Save the encrypted session BEFORE creating a charge. Retrying a failed
+      // request keeps the original order even when the provider response is lost.
+      rememberOrder(await api('/api/order', values));
+      preparingOrder = false;
+    }
+    if (consumeStatus(currentOrder)) return;
     const data = await api('/api/pix', {});
     if (consumeStatus(data)) return;
-    expiresAt = data.expiresAt;
-    if (data.qrCode) {
-      $('pix-code').value = data.qrCode;
-      $('code-area').hidden = false;
-      if (copyOnCreate) { copyOnCreate = false; await copyCode(); }
+    if (data.processing || !data.txId || typeof data.qrCode !== 'string' || !data.qrCode.trim()) {
+      throw new Error(generationError);
     }
-    if (data.qrImage) { $('qr-image').src = data.qrImage; $('qr-area').hidden = false; }
-    $('payment-status').textContent = data.qrCode ? 'Aguardando pagamento. A confirmação é automática.' : 'O banco está preparando sua cobrança. Aguarde e recupere o código sem criar um novo pedido.';
-    if (!data.qrCode) $('retry-button').hidden = false;
-    schedule(Math.max(30, data.retryAfter || 30));
+
+    // Only switch screens once a usable Pix code has actually been received.
+    expiresAt = data.expiresAt;
+    $('pix-code').value = data.qrCode;
+    $('code-area').hidden = false;
+    $('qr-area').hidden = !data.qrImage;
+    if (data.qrImage) $('qr-image').src = data.qrImage;
+    clearError('pix-error');
+    $('payment-status').textContent = 'Aguardando pagamento. A confirmação é automática.';
+    form.hidden = true;
+    $('pix-panel').hidden = false;
+    form.reset();
+    updateCountdown();
+    schedule(data.retryAfter || 30);
     countdown ??= setInterval(updateCountdown, 1000);
+    if (copy) await copyCode();
     if (focus) { $('pix-heading').focus(); $('pix-panel').scrollIntoView({ behavior: 'smooth', block: 'start' }); }
   } catch (error) {
-    showError('pix-error', error);
-    $('payment-status').textContent = 'Sua cobrança foi preservada. Use o botão abaixo para tentar novamente.';
-    $('retry-button').hidden = false;
-    if (currentOrder?.txId) schedule(error.retryAfter || 30);
-  } finally { busy = false; updateCountdown(); }
+    stopPolling();
+    form.hidden = false;
+    $('pix-panel').hidden = true;
+    showError('form-error', preparingOrder && error.status === 400 ? error : generationError);
+    if (focus) $('form-error').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } finally { setGenerating(false); }
 }
 async function checkPayment() {
-  if (busy) { schedule(30); return; }
-  if (document.hidden) { schedule(30); return; }
+  if ($('pix-panel').hidden) return;
+  if (busy || document.hidden) { schedule(30); return; }
   busy = true;
-  clearError('pix-error');
-  updateCountdown();
   try {
     const data = await api('/api/status');
     if (consumeStatus(data)) return;
-    $('payment-status').textContent = data.txId ? 'Aguardando pagamento. A confirmação é automática.' : 'Recupere sua cobrança para continuar.';
-    if (data.txId) schedule(Math.max(30, data.retryAfter || 30));
+    clearError('pix-error');
+    $('payment-status').textContent = 'Aguardando pagamento. A confirmação é automática.';
+    schedule(data.retryAfter || 30);
   } catch (error) {
-    showError('pix-error', error);
+    showError('pix-error', 'Não foi possível atualizar a confirmação agora. Tentaremos novamente automaticamente.');
     schedule(error.retryAfter || 30);
-  } finally { busy = false; updateCountdown(); }
+  } finally { setGenerating(false); }
 }
 
 $('document').addEventListener('input', event => {
@@ -105,24 +148,13 @@ $('document').addEventListener('input', event => {
 });
 form.addEventListener('submit', async event => {
   event.preventDefault();
-  if (busy) return;
-  copyOnCreate = event.submitter?.id === 'initial-copy-button';
-  clearError('form-error');
+  if (busy || !available) return;
   const values = Object.fromEntries(new FormData(form));
-  if (values.email.trim().toLowerCase() !== values.emailConfirmation.trim().toLowerCase()) {
-    showError('form-error', new Error('Os e-mails precisam ser iguais.'));
+  if ((!currentOrder || terminal.has(currentOrder.status)) && values.email.trim().toLowerCase() !== values.emailConfirmation.trim().toLowerCase()) {
+    showError('form-error', 'Os e-mails precisam ser iguais.');
     $('emailConfirmation').focus(); return;
   }
-  busy = true; $('pay-button').disabled = true; $('initial-copy-button').disabled = true; $('pay-button').querySelector('span').textContent = 'Preparando pagamento…';
-  try {
-    // The preparation response saves an encrypted HttpOnly cookie BEFORE issuing Pix.
-    // A lost charge response can then be recovered with the same idempotency key/body.
-    currentOrder = await api('/api/order', values);
-    form.reset();
-    busy = false;
-    await recoverPix({ focus: true });
-  } catch (error) { showError('form-error', error); }
-  finally { busy = false; $('pay-button').disabled = false; $('initial-copy-button').disabled = false; $('pay-button').querySelector('span').textContent = 'Gerar código QR'; }
+  await generatePix({ values, focus: true, copy: event.submitter?.id === 'initial-copy-button' });
 });
 async function copyCode() {
   try {
@@ -135,34 +167,29 @@ async function copyCode() {
   }
 }
 $('copy-button').addEventListener('click', copyCode);
-$('check-button').addEventListener('click', () => { if (Date.now() >= nextCheckAt) checkPayment(); });
-$('retry-button').addEventListener('click', () => recoverPix());
-$('reset-button').addEventListener('click', async () => {
-  if (busy) return;
-  busy = true; $('reset-button').disabled = true;
-  try { await api('/api/reset', {}); location.replace('/'); }
-  catch (error) { showError('pix-error', error); }
-  finally { busy = false; $('reset-button').disabled = false; }
-});
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && currentOrder?.txId && !['PAID','EXPIRED','FAILED','CANCELLED','REFUNDED'].includes(currentOrder.status) && Date.now() >= nextCheckAt) checkPayment();
+  if (!document.hidden && !$('pix-panel').hidden && currentOrder?.txId && Date.now() >= nextCheckAt) checkPayment();
 });
 
 async function init() {
   try {
     const config = await api('/api/config');
     document.querySelectorAll('[data-price]').forEach(element => { element.textContent = money(config.product.amount); });
-    if (!config.available) {
+    available = config.available;
+    if (!available) {
       $('availability').textContent = 'O pagamento está temporariamente indisponível. Tente novamente mais tarde.';
       $('availability').hidden = false;
       return;
     }
     const order = await api('/api/order');
     if (order.hasOrder) {
-      showPanel();
-      if (!consumeStatus(order)) await recoverPix();
-    } else { $('pay-button').disabled = false; $('initial-copy-button').disabled = false; }
-  } catch (error) {
+      rememberOrder(order, { restored: true });
+      if (!consumeStatus(order)) await generatePix();
+    }
+    setGenerating(false);
+  } catch {
+    available = false;
+    setGenerating(false);
     $('availability').textContent = 'Não foi possível carregar o pagamento. Atualize a página para tentar novamente.';
     $('availability').hidden = false;
   }
