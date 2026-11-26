@@ -13,6 +13,7 @@ const sampleQr = (await readFile(new URL('./sample-qr.png', import.meta.url))).t
 const handle = createHandler({ env, fetcher: async (url, options) => {
   if (url.endsWith('/pix/create')) {
     attempts.push({ key: options.headers['Idempotency-Key'], body: options.body });
+    if (mode === 'dns-failure') throw new TypeError('fetch failed', { cause: Object.assign(new Error('DNS lookup failed'), { code: 'ENOTFOUND' }) });
     if (mode === 'failure') return Response.json({ ok: false }, { status: 502 });
     if (mode === 'processing') return Response.json({ ok: true, tx_id: 'local_test_transaction', reconciliation_required: true }, { status: 202 });
     if (mode === 'missing-code') return Response.json({ ok: true, tx_id: 'local_test_transaction', amount: 247 });
@@ -29,7 +30,7 @@ createServer(async (req, res) => {
     if (url.pathname === '/fixture/reset') { status = 'PENDING'; mode = 'success'; attempts = []; statusChecks = 0; res.writeHead(302, { 'Set-Cookie': 'codigo_checkout=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0', Location: '/' }); res.end(); return; }
     if (url.pathname === '/fixture/mode') {
       const requested = url.searchParams.get('value');
-      if (!['success', 'failure', 'processing', 'missing-code', 'status-failure'].includes(requested)) { res.writeHead(400).end(); return; }
+      if (!['success', 'failure', 'dns-failure', 'processing', 'missing-code', 'status-failure'].includes(requested)) { res.writeHead(400).end(); return; }
       mode = requested; res.end(mode); return;
     }
     if (url.pathname === '/fixture/stats') {

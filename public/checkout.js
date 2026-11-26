@@ -4,6 +4,7 @@ const $ = id => document.getElementById(id);
 const form = $('buyer-form');
 const personal = form.querySelector('.personal');
 const terminal = new Set(['FAILED', 'CANCELLED', 'EXPIRED', 'REFUNDED']);
+const generationError = 'Não foi possível gerar o Pix. Tente novamente.';
 let currentOrder = null;
 let busy = false;
 let available = false;
@@ -84,6 +85,7 @@ async function generatePix({ values, focus = false, copy = false } = {}) {
   if (busy) return;
   setGenerating(true);
   clearError('form-error');
+  let creating = false;
   try {
     if (currentOrder && terminal.has(currentOrder.status)) {
       await api('/api/reset', {});
@@ -93,12 +95,11 @@ async function generatePix({ values, focus = false, copy = false } = {}) {
     // request keeps the original order even when the provider response is lost.
     rememberOrder(await api('/api/order', values));
     if (consumeStatus(currentOrder)) return;
+    creating = true;
     const data = await api('/api/pix', {});
     if (consumeStatus(data)) return;
     if (data.processing || !data.txId || typeof data.qrCode !== 'string' || !data.qrCode.trim()) {
-      throw new Error(data.processing
-        ? 'O Pix ainda está sendo preparado. Aguarde alguns segundos e clique em gerar novamente.'
-        : 'O serviço de pagamento ainda não retornou o código Pix. Clique em gerar novamente para tentar de novo.');
+      throw new Error(generationError);
     }
 
     // Only switch screens once a usable Pix code has actually been received.
@@ -121,7 +122,12 @@ async function generatePix({ values, focus = false, copy = false } = {}) {
     form.hidden = false;
     $('pix-panel').hidden = true;
     if (error.order) consumeStatus(error.order);
-    showError('form-error', error);
+    if (error.retryFresh) {
+      currentOrder = null;
+      form.noValidate = false;
+      personal.querySelectorAll('input').forEach(input => { input.readOnly = false; });
+    }
+    showError('form-error', creating ? generationError : error);
     if (focus) $('form-error').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } finally { setGenerating(false); }
 }

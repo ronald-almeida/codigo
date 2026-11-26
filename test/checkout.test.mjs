@@ -219,9 +219,11 @@ test('a definitive provider rejection permits corrected data, while uncertain er
   const handle = createHandler({ env, fetcher: async () => response({ ok: false }, 422) });
   const prepared = await handle(request('/api/order', { method: 'POST', body: customer }));
   const failure = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: {} }));
-  assert.equal((await failure.json()).order.status, 'FAILED');
-  const reset = await handle(request('/api/reset', { method: 'POST', cookie: getCookie(failure), body: {} }));
-  assert.equal(reset.status, 200);
+  assert.equal((await failure.json()).retryFresh, true);
+  assert.match(failure.headers.get('set-cookie'), /Max-Age=0/);
+  const retry = await handle(request('/api/order', { method: 'POST', cookie: getCookie(failure), body: { ...customer, name: 'Joana Teste' } }));
+  assert.equal(retry.status, 201);
+  assert.equal((await retry.json()).buyer.name, 'Joana Teste');
   const unknown = createHandler({ env, fetcher: async () => response({ ok: false }, 502) });
   const uncertain = await unknown(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: {} }));
   assert.equal((await unknown(request('/api/reset', { method: 'POST', cookie: getCookie(uncertain), body: {} }))).status, 409);
@@ -249,15 +251,28 @@ test('read-only health check validates gateway access without exposing account d
   assert.equal(calls, 1);
 });
 
-test('a DNS outage keeps buyer details and reports unavailability without leaking provider details', async t => {
+test('a DNS failure discards the attempt and the next submit creates a fresh Pix with edited data', async t => {
   t.mock.method(console, 'error', () => {});
-  const handle = createHandler({ env, fetcher: async () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('private upstream details'), { code: 'ENOTFOUND' }) }); } });
+  const calls = [];
+  const handle = createHandler({ env, fetcher: async (url, options) => {
+    calls.push(options);
+    if (calls.length === 1) throw new TypeError('fetch failed', { cause: Object.assign(new Error('private upstream details'), { code: 'ENOTFOUND' }) });
+    return response({ ok: true, tx_id: 'new_attempt', amount: 247, qr_code_text: 'TEST-NOT-A-PAYABLE-PIX' });
+  } });
   const prepared = await handle(request('/api/order', { method: 'POST', body: customer }));
   const failure = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: {} }));
   const data = await failure.json();
   assert.equal(data.code, 'ENOTFOUND');
-  assert.match(data.error, /temporariamente indisponível/);
+  assert.equal(data.error, 'Não foi possível gerar o Pix. Tente novamente.');
+  assert.equal(data.retryFresh, true);
+  assert.equal(data.order, undefined);
+  assert.match(failure.headers.get('set-cookie'), /Max-Age=0/);
   assert.equal(JSON.stringify(data).includes('private upstream'), false);
   const restored = await handle(request('/api/order', { cookie: getCookie(failure) }));
-  assert.equal((await restored.json()).buyer.name, customer.name);
+  assert.deepEqual(await restored.json(), { hasOrder: false });
+  const retried = await handle(request('/api/order', { method: 'POST', cookie: getCookie(failure), body: { ...customer, name: 'Joana Teste' } }));
+  const pix = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(retried), body: {} }));
+  assert.equal((await pix.json()).txId, 'new_attempt');
+  assert.notEqual(calls[0].headers['Idempotency-Key'], calls[1].headers['Idempotency-Key']);
+  assert.equal(JSON.parse(calls[1].body).generatedName, 'Joana Teste');
 });

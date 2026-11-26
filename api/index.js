@@ -66,7 +66,13 @@ export function createHandler({ env = process.env, fetcher = fetch } = {}) {
         if (['FAILED', 'EXPIRED', 'CANCELLED', 'REFUNDED'].includes(session.status)) return respond(publicOrder(session));
         try { return respond(await issuePix(session, env, fetcher)); }
         catch (error) {
-          if (error.creationRejected && !session.txId) { session.creationRejected = true; session.status = 'FAILED'; }
+          if (error.creationRejected && !session.txId) {
+            // No charge was created. Discard this failed attempt so the next
+            // submit can use edited buyer data and a fresh order immediately.
+            session = null;
+            headers.set('Set-Cookie', 'codigo_checkout=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
+            error.retryFresh = true;
+          }
           throw error;
         }
       }
@@ -89,7 +95,7 @@ export function createHandler({ env = process.env, fetcher = fetch } = {}) {
       const expected = error instanceof CheckoutError;
       if (!expected) console.error('checkout_unexpected_error', { name: error?.name });
       if (error.retryAfter) headers.set('Retry-After', String(error.retryAfter));
-      return respond({ error: expected ? error.message : 'Não foi possível concluir sua solicitação. Tente novamente.', ...(expected && error.code ? { code: error.code } : {}), retryAfter: error.retryAfter || 30, ...(session ? { order: publicOrder(session) } : {}) }, expected ? error.status : 500);
+      return respond({ error: expected ? error.message : 'Não foi possível concluir sua solicitação. Tente novamente.', ...(expected && error.code ? { code: error.code } : {}), ...(error.retryFresh ? { retryFresh: true } : {}), retryAfter: error.retryAfter || 30, ...(session ? { order: publicOrder(session) } : {}) }, expected ? error.status : 500);
     }
   };
 }

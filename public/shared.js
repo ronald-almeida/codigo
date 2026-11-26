@@ -13,6 +13,7 @@ export async function api(path, body) {
     error.retryAfter = Number(response.headers.get('retry-after') || data.retryAfter || 30);
     error.status = response.status;
     error.order = data.order;
+    error.retryFresh = data.retryFresh === true;
     throw error;
   }
   return data;
