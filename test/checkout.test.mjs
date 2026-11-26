@@ -197,3 +197,54 @@ test('cancelled, failed, expired and refunded payments never produce a receipt',
     assert.equal(receipt.status, 409);
   }
 });
+
+test('failed generation and reload restore all buyer fields only through the session order endpoint', async t => {
+  t.mock.method(console, 'error', () => {});
+  const handle = createHandler({ env, fetcher: async () => response({ ok: false }, 502) });
+  const prepared = await handle(request('/api/order', { method: 'POST', body: customer }));
+  const failure = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: {} }));
+  const reloaded = await handle(request('/api/order', { cookie: getCookie(failure) }));
+  assert.deepEqual((await reloaded.json()).buyer, { name: customer.name, email: customer.email, document: '09115751031', phone: '75999999999' });
+  assert.match(reloaded.headers.get('cache-control'), /no-store/);
+  const status = await handle(request('/api/status', { cookie: getCookie(failure) }));
+  assert.equal((await status.json()).buyer, undefined);
+  assert.equal((await failure.json()).buyer, undefined);
+  const legacy = newOrder(validateCustomer(customer));
+  const legacyResponse = await handle(request('/api/order', { cookie: `codigo_checkout=${seal(legacy, env)}` }));
+  assert.equal((await legacyResponse.json()).buyer.document, '09115751031');
+});
+
+test('a definitive provider rejection permits corrected data, while uncertain errors preserve the key', async t => {
+  t.mock.method(console, 'error', () => {});
+  const handle = createHandler({ env, fetcher: async () => response({ ok: false }, 422) });
+  const prepared = await handle(request('/api/order', { method: 'POST', body: customer }));
+  const failure = await handle(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: {} }));
+  assert.equal((await failure.json()).order.status, 'FAILED');
+  const reset = await handle(request('/api/reset', { method: 'POST', cookie: getCookie(failure), body: {} }));
+  assert.equal(reset.status, 200);
+  const unknown = createHandler({ env, fetcher: async () => response({ ok: false }, 502) });
+  const uncertain = await unknown(request('/api/pix', { method: 'POST', cookie: getCookie(prepared), body: {} }));
+  assert.equal((await unknown(request('/api/reset', { method: 'POST', cookie: getCookie(uncertain), body: {} }))).status, 409);
+});
+
+test('a processing transaction that later fails is reconciled instead of replayed forever', async () => {
+  const order = { ...newOrder(validateCustomer(customer)), txId: randomUUID(), nextCheckAt: 0 };
+  const calls = [];
+  const handle = createHandler({ env, fetcher: async url => { calls.push(url); return response({ ok: true, tx_id: order.txId, status: 'FAILED', amount: 247 }); } });
+  const result = await handle(request('/api/pix', { method: 'POST', cookie: `codigo_checkout=${seal(order, env)}`, body: {} }));
+  assert.equal((await result.json()).status, 'FAILED');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /\/pix\/status\//);
+});
+
+test('read-only health check validates gateway access without exposing account details or creating Pix', async () => {
+  let calls = 0;
+  const handle = createHandler({ env, fetcher: async url => {
+    calls++; assert.match(url, /\/auth\/validate$/);
+    return response({ ok: true, authenticated: true, account: { status: true, min_deposit: 5, max_deposit: 50000, saldo: 100, chat_id: 'private-account' } });
+  } });
+  const result = await handle(request('/api/health'));
+  assert.deepEqual(await result.json(), { available: true, authenticated: true, active: true, amountAllowed: true });
+  await handle(request('/api/health'));
+  assert.equal(calls, 1);
+});

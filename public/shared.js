@@ -12,6 +12,7 @@ export async function api(path, body) {
     const error = new Error(data.error || 'Não foi possível concluir a solicitação.');
     error.retryAfter = Number(response.headers.get('retry-after') || data.retryAfter || 30);
     error.status = response.status;
+    error.order = data.order;
     throw error;
   }
   return data;

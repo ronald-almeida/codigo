@@ -49,6 +49,7 @@ Para verificar falhas de geração, altere o simulador pela rota local `/fixture
 - `/api/pix` chama `https://api.nexumpaybot.com/api/public/pix/create` com a mesma `Idempotency-Key`, corpo e referência em todas as tentativas do pedido. Recarregar a página recupera a cobrança existente.
 - O QR e o código Copia e Cola vêm da Nexum; nenhum QR de pagamento da referência é reutilizado.
 - A tela de pagamento só aparece quando a API devolve um código Pix disponível. Se a geração falhar ou ainda estiver em processamento, o formulário continua aberto e exibe um erro vermelho abaixo dos botões. Uma nova tentativa usa a mesma cobrança, sem botões separados de recuperação ou consulta manual.
+- Atualizar a página restaura nome, email, CPF e celular da sessão criptografada, sem esconder o formulário nem disparar outra geração automaticamente. Sessões antigas recuperam os campos que já guardavam; o celular pode ser completado. Rejeições definitivas permitem corrigir os dados e tentar de novo; respostas incertas preservam a referência para evitar duplicidade.
 - `/api/status` consulta o provedor a cada 30 segundos e respeita `Retry-After`. Confere identificador e valor antes de aceitar o pagamento.
 - Após confirmação, o navegador abre `/obrigado`. `/api/receipt` valida a sessão e o pagamento; parâmetros como `?paid=true` não liberam o recibo.
 - A página de obrigado informa as 24 horas, abre o WhatsApp e direciona o pedido de reembolso para `https://reembolso-de-alunos.vercel.app/` sem anexar dados pessoais à URL.
@@ -60,5 +61,7 @@ Este projeto confirma pagamentos e apresenta instruções; a entrega do curso ap
 ## Verificação
 
 Os testes cobrem validação, preço fixo, idempotência, recuperação de falha, estados pendentes, sessão adulterada, confirmação de valor, limite de consulta e acesso ao recibo. A prévia permite conferir checkout, QR, cópia e redirecionamento sem gerar cobranças reais. O pagamento real só pode ser validado após cadastrar as credenciais e realizar uma transação autorizada.
+
+`GET /api/health` verifica a autenticação com a Nexum, a disponibilidade da conta e se o valor está nos limites permitidos, sem criar cobrança nem retornar saldo, identificadores da conta ou credenciais.
 
 Referências: [checkout original](https://pay.hotmart.com/F108265667C), [API Nexum](https://app.nexumpaybot.com/api/index.html), [Node.js na Vercel](https://vercel.com/docs/functions/runtimes/node-js).

@@ -4,7 +4,6 @@ const $ = id => document.getElementById(id);
 const form = $('buyer-form');
 const personal = form.querySelector('.personal');
 const terminal = new Set(['FAILED', 'CANCELLED', 'EXPIRED', 'REFUNDED']);
-const generationError = 'Não foi possível gerar o Pix. Tente novamente.';
 let currentOrder = null;
 let busy = false;
 let available = false;
@@ -30,13 +29,16 @@ function stopPolling() {
   clearInterval(countdown);
   countdown = null;
 }
-function rememberOrder(order, { restored = false } = {}) {
+function rememberOrder(order, { restore = false } = {}) {
   currentOrder = order;
-  // A retry must use the same payer and idempotency key. Do not ask for data again
-  // when the encrypted session has already saved this order after a page reload.
+  personal.hidden = false;
+  if (restore && order.buyer) {
+    for (const key of ['name', 'email', 'document', 'phone']) $(key).value = order.buyer[key] || '';
+    $('emailConfirmation').value = order.buyer.email || '';
+  }
+  // Keep the saved payer visible while a retry reconciles the same charge.
   form.noValidate = true;
-  personal.querySelectorAll('input').forEach(input => { input.readOnly = true; });
-  if (restored) personal.hidden = true;
+  personal.querySelectorAll('input').forEach(input => { input.readOnly = input.id !== 'phone'; });
 }
 function consumeStatus(data) {
   currentOrder = data;
@@ -82,24 +84,21 @@ async function generatePix({ values, focus = false, copy = false } = {}) {
   if (busy) return;
   setGenerating(true);
   clearError('form-error');
-  let preparingOrder = false;
   try {
     if (currentOrder && terminal.has(currentOrder.status)) {
       await api('/api/reset', {});
       currentOrder = null;
     }
-    if (!currentOrder) {
-      preparingOrder = true;
-      // Save the encrypted session BEFORE creating a charge. Retrying a failed
-      // request keeps the original order even when the provider response is lost.
-      rememberOrder(await api('/api/order', values));
-      preparingOrder = false;
-    }
+    // Save the encrypted session BEFORE creating a charge. Retrying a failed
+    // request keeps the original order even when the provider response is lost.
+    rememberOrder(await api('/api/order', values));
     if (consumeStatus(currentOrder)) return;
     const data = await api('/api/pix', {});
     if (consumeStatus(data)) return;
     if (data.processing || !data.txId || typeof data.qrCode !== 'string' || !data.qrCode.trim()) {
-      throw new Error(generationError);
+      throw new Error(data.processing
+        ? 'O Pix ainda está sendo preparado. Aguarde alguns segundos e clique em gerar novamente.'
+        : 'O serviço de pagamento ainda não retornou o código Pix. Clique em gerar novamente para tentar de novo.');
     }
 
     // Only switch screens once a usable Pix code has actually been received.
@@ -112,7 +111,6 @@ async function generatePix({ values, focus = false, copy = false } = {}) {
     $('payment-status').textContent = 'Aguardando pagamento. A confirmação é automática.';
     form.hidden = true;
     $('pix-panel').hidden = false;
-    form.reset();
     updateCountdown();
     schedule(data.retryAfter || 30);
     countdown ??= setInterval(updateCountdown, 1000);
@@ -122,7 +120,8 @@ async function generatePix({ values, focus = false, copy = false } = {}) {
     stopPolling();
     form.hidden = false;
     $('pix-panel').hidden = true;
-    showError('form-error', preparingOrder && error.status === 400 ? error : generationError);
+    if (error.order) consumeStatus(error.order);
+    showError('form-error', error);
     if (focus) $('form-error').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } finally { setGenerating(false); }
 }
@@ -183,8 +182,9 @@ async function init() {
     }
     const order = await api('/api/order');
     if (order.hasOrder) {
-      rememberOrder(order, { restored: true });
-      if (!consumeStatus(order)) await generatePix();
+      rememberOrder(order, { restore: true });
+      // Reload restores the form; it must not silently trigger another create request.
+      consumeStatus(order);
     }
     setGenerating(false);
   } catch {
