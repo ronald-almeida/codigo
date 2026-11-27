@@ -46,7 +46,7 @@ Para verificar falhas de geração, altere o simulador pela rota local `/fixture
 ## Fluxo de pagamento
 
 - O navegador envia os dados a `/api/order`, que valida nome, email, confirmação de email, CPF e telefone, fixa o preço no servidor e cria uma sessão criptografada HttpOnly contendo somente referências técnicas, sem os valores dos campos.
-- `/api/pix` chama `https://api.nexumpaybot.com/api/public/pix/create` com a mesma `Idempotency-Key`, corpo e referência em todas as tentativas do pedido. As tentativas na mesma página podem reutilizar a referência, sem guardar os dados do pagador no navegador.
+- `/api/pix` chama `https://api.botnexumpay.com/api/public/pix/create` com a mesma `Idempotency-Key`, corpo e referência em todas as tentativas do pedido. As tentativas na mesma página podem reutilizar a referência, sem guardar os dados do pagador no navegador.
 - O QR e o código Copia e Cola vêm da Nexum; nenhum QR de pagamento da referência é reutilizado.
 - A tela de pagamento só aparece quando a API devolve um código Pix disponível. Se a geração falhar ou ainda estiver em processamento, o formulário continua aberto e exibe um erro vermelho abaixo dos botões. Tentativas com os mesmos dados na mesma página podem reutilizar a referência técnica, sem botões separados de recuperação ou consulta manual.
 - Quando a tentativa falha antes de chegar ao provedor (por exemplo, erro de DNS), ou é recusada sem criar transação, ela é descartada. O formulário permanece visível e editável e o botão permite gerar novamente, com a mensagem “Não foi possível gerar o Pix. Tente novamente.”. O próximo envio cria uma nova tentativa. Em respostas incertas de uma transação que pode ter sido criada, a referência técnica continua idempotente para evitar duplicidade.
