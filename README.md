@@ -14,7 +14,7 @@ Checkout responsivo inspirado na referência fornecida, com imagem original do p
 | `NEXUM_CHAT_ID` | ID da conta/chat fornecido pela Nexum |
 | `NEXUM_API_CREDENTIAL` | Credencial privada da Nexum |
 | `CHECKOUT_SESSION_SECRET` | Segredo aleatório próprio deste projeto, com pelo menos 32 caracteres |
-| `NEXUM_ORIGIN` | `https://nexumpaybot.com`, ou a origem autorizada pela Nexum para sua conta |
+| `NEXUM_ORIGIN` | `https://botnexumpay.com`, origem aceita pela API atual da Nexum |
 | `WHATSAPP_URL` | Opcional; padrão `https://wa.me/5575988393742` |
 
 Gere o segredo da sessão em seu terminal com `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`. Cadastre as três primeiras variáveis como segredos na hospedagem. Sem elas, os botões de pagamento ficam indisponíveis com uma mensagem clara.

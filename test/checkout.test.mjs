@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { createHandler } from '../api/index.js';
 import { validCPF, validateCustomer, seal, unseal, normalizeStatus, retrySeconds, issuePix, checkPix, newOrder, PRODUCT } from '../lib/checkout.js';
 
-const env = { NEXUM_CHAT_ID: 'test-account', NEXUM_API_CREDENTIAL: 'test-credential', CHECKOUT_SESSION_SECRET: 'test-secret-only-not-for-production-123456789', WHATSAPP_URL: 'https://wa.me/5575988393742', NEXUM_ORIGIN: 'https://nexumpaybot.com' };
+const env = { NEXUM_CHAT_ID: 'test-account', NEXUM_API_CREDENTIAL: 'test-credential', CHECKOUT_SESSION_SECRET: 'test-secret-only-not-for-production-123456789', WHATSAPP_URL: 'https://wa.me/5575988393742', NEXUM_ORIGIN: 'https://botnexumpay.com' };
 const customer = { name: 'João da Conceição', email: 'test@example.com', emailConfirmation: 'test@example.com', document: '091.157.510-31', phone: '(75) 99999-9999' };
 const response = (data, status = 200, headers = {}) => new Response(JSON.stringify(data), { status, headers });
 const request = (path, { method = 'GET', cookie, body, origin = 'https://checkout.example.com' } = {}) => new Request(`https://checkout.example.com${path}`, { method, headers: { 'Content-Type': 'application/json', ...(origin ? { Origin: origin } : {}), ...(cookie ? { Cookie: cookie } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
