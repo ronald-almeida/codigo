@@ -54,10 +54,28 @@ svg{
 img{
   max-width:100%
 }
+.checkout-banner{
+  display:block;
+  width:1024px;
+  max-width:calc(100% - 32px);
+  height:auto;
+  margin:24px auto 0;
+  border-radius:8px
+}
+.checkout-benefits{
+  margin-top:24px;
+  border-radius:8px;
+  overflow:hidden
+}
+.checkout-benefits img{
+  display:block;
+  width:100%;
+  height:auto
+}
 .checkout-shell{
   width:662px;
   max-width:calc(100% - 32px);
-  margin:40px auto 90px
+  margin:24px auto 90px
 }
 .checkout-card{
   border:1px solid #d5d3ce;
@@ -702,6 +720,13 @@ input:focus,textarea:focus{
   }
 }
 @media(max-width:600px){
+  .checkout-banner{
+    max-width:calc(100% - 20px);
+    margin-top:12px
+  }
+  .checkout-benefits{
+    margin-top:16px
+  }
   .checkout-shell{
     margin:16px auto 86px;
     max-width:calc(100% - 20px)
